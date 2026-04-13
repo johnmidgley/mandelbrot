@@ -39,10 +39,15 @@
   }
   #info span { white-space: nowrap; }
   .help { font-size: 11px; color: #666; margin-top: 8px; line-height: 1.5; }
+  #reticle { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
+<div id="reticle" style="display:none">
+  <div style="position:absolute;top:50%;left:50%;width:20px;height:2px;background:rgba(255,255,255,0.6);transform:translate(-50%,-50%);pointer-events:none;mix-blend-mode:difference"></div>
+  <div style="position:absolute;top:50%;left:50%;width:2px;height:20px;background:rgba(255,255,255,0.6);transform:translate(-50%,-50%);pointer-events:none;mix-blend-mode:difference"></div>
+</div>
 <button id="toggle-btn">Controls</button>
 <div id="controls">
   <h2>Mandelbrot Explorer</h2>
@@ -112,6 +117,7 @@
   <div class="group">
     <label><input type="checkbox" id="smoothColor" checked> Smooth coloring</label>
     <label style="margin-top:4px"><input type="checkbox" id="animateColors"> Animate colors</label>
+    <label style="margin-top:4px">Press <b>C</b> to toggle mouse-follow mode</label>
   </div>
 
   <div class="group">
@@ -147,7 +153,8 @@ void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
 precision highp float;
 
 uniform vec2 u_resolution;
-uniform vec2 u_center;
+uniform vec2 u_center_hi;  // high bits of center (float32 main value)
+uniform vec2 u_center_lo;  // low bits of center (float32 error term)
 uniform float u_zoom;
 uniform int u_maxIter;
 uniform float u_power;
@@ -162,6 +169,42 @@ uniform int u_smooth;
 uniform float u_time;
 
 out vec4 fragColor;
+
+// Double-single arithmetic: represent a number as (hi + lo) for ~48-bit precision
+// hi carries the main value, lo carries the rounding error
+
+// Add two double-single numbers
+vec2 ds_add(vec2 a, vec2 b) {
+  float s = a.x + b.x;
+  float v = s - a.x;
+  float t = (a.x - (s - v)) + (b.x - v) + a.y + b.y;
+  return vec2(s, t);
+}
+
+// Multiply two double-single numbers
+vec2 ds_mul(vec2 a, vec2 b) {
+  float p = a.x * b.x;
+  // Error term: use split multiplication since fma isn't available
+  // Split a.x into high and low 12-bit parts
+  float c = 4097.0 * a.x;  // 2^12 + 1
+  float ah = c - (c - a.x);
+  float al = a.x - ah;
+  float d = 4097.0 * b.x;
+  float bh = d - (d - b.x);
+  float bl = b.x - bh;
+  float e = ((ah * bh - p) + ah * bl + al * bh) + al * bl + a.x * b.y + a.y * b.x;
+  return vec2(p, e);
+}
+
+// Subtract: a - b
+vec2 ds_sub(vec2 a, vec2 b) {
+  return ds_add(a, vec2(-b.x, -b.y));
+}
+
+// Create a double-single from a single float
+vec2 ds_set(float a) {
+  return vec2(a, 0.0);
+}
 
 vec3 hsl2rgb(float h, float s, float l) {
   h = fract(h) * 6.0;
@@ -227,9 +270,20 @@ void main() {
   float aspect = u_resolution.x / u_resolution.y;
   float scale = 3.5 / u_zoom;
 
-  // Map pixel to complex plane
-  float cx = u_center.x + (uv.x / u_resolution.x - 0.5) * scale * aspect;
-  float cy = u_center.y + (uv.y / u_resolution.y - 0.5) * scale;
+  // Map pixel to complex plane using double-single precision
+  // The pixel offset from center is small enough for float32,
+  // but the center itself needs full precision
+  float px_offset_x = (uv.x / u_resolution.x - 0.5) * scale * aspect;
+  float px_offset_y = (uv.y / u_resolution.y - 0.5) * scale;
+
+  // Add pixel offset to double-single center: center_ds + offset
+  vec2 cx_ds = ds_add(vec2(u_center_hi.x, u_center_lo.x), ds_set(px_offset_x));
+  vec2 cy_ds = ds_add(vec2(u_center_hi.y, u_center_lo.y), ds_set(px_offset_y));
+
+  // For iteration, collapse to float32 — iteration precision is less critical
+  // than position precision (which determines WHICH point we're iterating)
+  float cx = cx_ds.x + cx_ds.y;
+  float cy = cy_ds.x + cy_ds.y;
 
   float zr, zi, cr, ci;
 
@@ -325,8 +379,12 @@ let state = {
   juliaR: -0.7, juliaI: 0.27,
   smoothColor: true,
   animateColors: false,
+  followMouse: false,
   zoomSpeed: 0.1,
 };
+
+let mouseX = window.innerWidth / 2;
+let mouseY = window.innerHeight / 2;
 
 let animOffset = 0;
 let needsRender = true;
@@ -378,11 +436,19 @@ gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
 // Uniforms
 const u = {};
-['u_resolution','u_center','u_zoom','u_maxIter','u_power','u_bailout',
+['u_resolution','u_center_hi','u_center_lo','u_zoom','u_maxIter','u_power','u_bailout',
  'u_colorScheme','u_colorCycle','u_colorOffset','u_interiorColor',
  'u_mode','u_julia','u_smooth','u_time'].forEach(name => {
   u[name] = gl.getUniformLocation(prog, name);
 });
+
+// Split a float64 into two float32s: hi + lo = value
+// hi gets the value rounded to float32, lo gets the remainder
+function splitDouble(v) {
+  const hi = Math.fround(v);
+  const lo = v - hi;
+  return [hi, lo];
+}
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
@@ -397,8 +463,11 @@ window.addEventListener('resize', resize);
 resize();
 
 function render() {
+  const [cxHi, cxLo] = splitDouble(state.centerX);
+  const [cyHi, cyLo] = splitDouble(state.centerY);
   gl.uniform2f(u.u_resolution, canvas.width, canvas.height);
-  gl.uniform2f(u.u_center, state.centerX, state.centerY);
+  gl.uniform2f(u.u_center_hi, cxHi, cyHi);
+  gl.uniform2f(u.u_center_lo, cxLo, cyLo);
   gl.uniform1f(u.u_zoom, state.zoom);
   gl.uniform1i(u.u_maxIter, state.maxIter);
   gl.uniform1f(u.u_power, state.power);
@@ -448,6 +517,20 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
+  if (state.followMouse && document.pointerLockElement) {
+    // Pointer is locked — use movement deltas to pan
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const scale = 3.5 / state.zoom;
+    state.centerX -= e.movementX / w * scale * aspect;
+    state.centerY += e.movementY / h * scale;
+    needsRender = true;
+    updateInfo();
+    return;
+  }
+
+  mouseX = e.clientX;
+  mouseY = e.clientY;
   const pt = screenToFractal(e.clientX, e.clientY);
   document.getElementById('info-mouse').textContent = `Mouse: ${pt.x.toFixed(10)}, ${pt.y.toFixed(10)}i`;
 
@@ -572,6 +655,33 @@ document.getElementById('smoothColor').addEventListener('change', (e) => {
 });
 document.getElementById('animateColors').addEventListener('change', (e) => {
   state.animateColors = e.target.checked; needsRender = true;
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'c' || e.key === 'C') {
+    if (state.followMouse) {
+      // Toggle off — release pointer lock
+      state.followMouse = false;
+      document.exitPointerLock();
+    } else {
+      // Toggle on — center on current mouse position, then lock pointer
+      const pt = screenToFractal(mouseX, mouseY);
+      state.centerX = pt.x;
+      state.centerY = pt.y;
+      state.followMouse = true;
+      document.getElementById('reticle').style.display = 'block';
+      canvas.requestPointerLock();
+      needsRender = true;
+      updateInfo();
+    }
+  }
+});
+
+// Also turn off follow mode if pointer lock is exited externally (e.g. pressing Escape)
+document.addEventListener('pointerlockchange', () => {
+  if (!document.pointerLockElement) {
+    state.followMouse = false;
+    document.getElementById('reticle').style.display = 'none';
+  }
 });
 
 document.getElementById('resetBtn').addEventListener('click', () => {
