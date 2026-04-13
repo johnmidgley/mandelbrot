@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mandelbrot Explorer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; color: #eee; font-family: 'Segoe UI', system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; }
+  #controls {
+    position: fixed; top: 0; right: 0; width: 280px; max-height: 100vh;
+    overflow-y: auto; background: rgba(0,0,0,0.85); padding: 16px;
+    border-left: 1px solid #333; z-index: 10;
+    transition: transform 0.3s;
+  }
+  #controls.hidden { transform: translateX(100%); }
+  #toggle-btn {
+    position: fixed; top: 10px; right: 10px; z-index: 11;
+    background: rgba(0,0,0,0.7); color: #eee; border: 1px solid #555;
+    padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 14px;
+  }
+  #controls h2 { font-size: 16px; margin-bottom: 12px; color: #8cf; }
+  .group { margin-bottom: 14px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+  .group:last-child { border-bottom: none; }
+  label { display: block; font-size: 12px; color: #aaa; margin-bottom: 3px; }
+  input[type=range] { width: 100%; accent-color: #8cf; }
+  select, button {
+    width: 100%; padding: 6px 8px; background: #222; color: #eee;
+    border: 1px solid #444; border-radius: 4px; font-size: 13px; margin-bottom: 6px;
+  }
+  button { cursor: pointer; background: #335; }
+  button:hover { background: #447; }
+  .val { float: right; color: #8cf; font-size: 12px; }
+  #info {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.7); padding: 6px 14px; font-size: 12px;
+    color: #888; display: flex; gap: 20px; z-index: 10;
+  }
+  #info span { white-space: nowrap; }
+  .help { font-size: 11px; color: #666; margin-top: 8px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<button id="toggle-btn">Controls</button>
+<div id="controls">
+  <h2>Mandelbrot Explorer</h2>
+
+  <div class="group">
+    <label>Zoom Speed <span class="val" id="v-zspeed">0.10</span></label>
+    <input type="range" id="zoomSpeed" min="0.01" max="0.2" value="0.1" step="0.01">
+  </div>
+
+  <div class="group">
+    <label>Max Iterations <span class="val" id="v-iter">200</span></label>
+    <input type="range" id="maxIter" min="20" max="2000" value="200" step="10">
+  </div>
+
+  <div class="group">
+    <label>Power (z^n + c) <span class="val" id="v-power">2.0</span></label>
+    <input type="range" id="power" min="1" max="8" value="2" step="0.1">
+  </div>
+
+  <div class="group">
+    <label>Escape Radius <span class="val" id="v-bail">4.0</span></label>
+    <input type="range" id="bailout" min="2" max="100" value="4" step="1">
+  </div>
+
+  <div class="group">
+    <label>Color Scheme</label>
+    <select id="colorScheme">
+      <option value="0">Smooth Rainbow</option>
+      <option value="1">Fire</option>
+      <option value="2">Ocean</option>
+      <option value="3">Electric</option>
+      <option value="4">Psychedelic</option>
+      <option value="5">Grayscale</option>
+      <option value="6">Neon Glow</option>
+    </select>
+    <label>Color Cycle Speed <span class="val" id="v-cycle">1.0</span></label>
+    <input type="range" id="colorCycle" min="0.1" max="5" value="1" step="0.1">
+    <label>Color Offset <span class="val" id="v-offset">0</span></label>
+    <input type="range" id="colorOffset" min="0" max="360" value="0" step="1">
+  </div>
+
+  <div class="group">
+    <label>Interior Color</label>
+    <select id="interiorColor">
+      <option value="0">Black</option>
+      <option value="1">White</option>
+      <option value="2">Smooth (orbit trap)</option>
+    </select>
+  </div>
+
+  <div class="group">
+    <label>Mode</label>
+    <select id="mode">
+      <option value="0">Mandelbrot</option>
+      <option value="1">Julia Set</option>
+      <option value="2">Burning Ship</option>
+      <option value="3">Tricorn</option>
+    </select>
+    <div id="julia-params" style="display:none; margin-top: 8px;">
+      <label>Julia Real <span class="val" id="v-jr">-0.7</span></label>
+      <input type="range" id="juliaR" min="-2" max="2" value="-0.7" step="0.001">
+      <label>Julia Imag <span class="val" id="v-ji">0.27</span></label>
+      <input type="range" id="juliaI" min="-2" max="2" value="0.27" step="0.001">
+    </div>
+  </div>
+
+  <div class="group">
+    <label><input type="checkbox" id="smoothColor" checked> Smooth coloring</label>
+    <label style="margin-top:4px"><input type="checkbox" id="animateColors"> Animate colors</label>
+  </div>
+
+  <div class="group">
+    <button id="resetBtn">Reset View</button>
+    <button id="saveBtn">Save as PNG</button>
+  </div>
+
+  <div class="help">
+    <b>Mouse:</b> Scroll to zoom, drag to pan<br>
+    <b>Click:</b> Center on point<br>
+    <b>Shift+Click:</b> Set Julia constant from point<br>
+    <b>Touch:</b> Pinch to zoom, drag to pan
+  </div>
+</div>
+
+<div id="info">
+  <span id="info-center">Center: 0, 0</span>
+  <span id="info-zoom">Zoom: 1x</span>
+  <span id="info-mouse">Mouse: 0, 0</span>
+  <span id="info-fps">FPS: --</span>
+</div>
+
+<!-- Vertex shader - just a fullscreen quad -->
+<script id="vs" type="x-shader/x-vertex">
+#version 300 es
+in vec2 a_pos;
+void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+</script>
+
+<!-- Fragment shader - ALL fractal math runs here on the GPU -->
+<script id="fs" type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+
+uniform vec2 u_resolution;
+uniform vec2 u_center;
+uniform float u_zoom;
+uniform int u_maxIter;
+uniform float u_power;
+uniform float u_bailout;
+uniform int u_colorScheme;
+uniform float u_colorCycle;
+uniform float u_colorOffset;
+uniform int u_interiorColor;
+uniform int u_mode; // 0=mandelbrot, 1=julia, 2=burning, 3=tricorn
+uniform vec2 u_julia;
+uniform int u_smooth;
+uniform float u_time;
+
+out vec4 fragColor;
+
+vec3 hsl2rgb(float h, float s, float l) {
+  h = fract(h) * 6.0;
+  float c = (1.0 - abs(2.0 * l - 1.0)) * s;
+  float x = c * (1.0 - abs(mod(h, 2.0) - 1.0));
+  float m = l - c * 0.5;
+  vec3 rgb;
+  if (h < 1.0) rgb = vec3(c, x, 0);
+  else if (h < 2.0) rgb = vec3(x, c, 0);
+  else if (h < 3.0) rgb = vec3(0, c, x);
+  else if (h < 4.0) rgb = vec3(0, x, c);
+  else if (h < 5.0) rgb = vec3(x, 0, c);
+  else rgb = vec3(c, 0, x);
+  return rgb + m;
+}
+
+vec3 getColor(float t, int scheme, float offset) {
+  t = t * u_colorCycle + offset;
+  if (scheme == 0) { // Smooth Rainbow
+    return hsl2rgb(t, 0.8, 0.5);
+  } else if (scheme == 1) { // Fire
+    float ft = fract(t);
+    return vec3(
+      min(1.0, ft * 2.4),
+      max(0.0, min(1.0, (ft - 0.3) * 2.4)),
+      max(0.0, min(1.0, (ft - 0.6) * 2.4))
+    );
+  } else if (scheme == 2) { // Ocean
+    return hsl2rgb((200.0 + t * 60.0) / 360.0, 0.7 + sin(t * 6.28) * 0.3, 0.2 + fract(t) * 0.5);
+  } else if (scheme == 3) { // Electric
+    float phase = t * 6.28318;
+    return vec3(
+      sin(phase) * 0.5 + 0.5,
+      sin(phase + 2.094) * 0.5 + 0.5,
+      sin(phase + 4.189) * 0.5 + 0.5
+    );
+  } else if (scheme == 4) { // Psychedelic
+    return hsl2rgb(t * 3.0, 1.0, 0.5);
+  } else if (scheme == 5) { // Grayscale
+    float v = fract(t);
+    return vec3(v);
+  } else { // Neon
+    float p = t * 6.28318;
+    return vec3(
+      pow(sin(p), 2.0),
+      pow(sin(p + 1.5), 2.0),
+      pow(sin(p + 3.0), 2.0) * 0.784 + 0.216
+    );
+  }
+}
+
+// Complex power for arbitrary exponents
+vec2 cpow(vec2 z, float n) {
+  float r = length(z);
+  if (r == 0.0) return vec2(0.0);
+  float theta = atan(z.y, z.x);
+  float rn = pow(r, n);
+  return vec2(rn * cos(theta * n), rn * sin(theta * n));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy;
+  float aspect = u_resolution.x / u_resolution.y;
+  float scale = 3.5 / u_zoom;
+
+  // Map pixel to complex plane
+  float cx = u_center.x + (uv.x / u_resolution.x - 0.5) * scale * aspect;
+  float cy = u_center.y + (uv.y / u_resolution.y - 0.5) * scale;
+
+  float zr, zi, cr, ci;
+
+  if (u_mode == 1) { // Julia
+    zr = cx; zi = cy;
+    cr = u_julia.x; ci = u_julia.y;
+  } else {
+    zr = 0.0; zi = 0.0;
+    cr = cx; ci = cy;
+  }
+
+  float zr2 = zr * zr;
+  float zi2 = zi * zi;
+  int iter = 0;
+  float bailout = u_bailout;
+
+  // Use a compile-time max loop with runtime break (GLSL requires constant loop bounds)
+  // 2000 matches the max slider value
+  for (int i = 0; i < 2000; i++) {
+    if (i >= u_maxIter) break;
+    if (zr2 + zi2 > bailout) break;
+
+    if (u_power == 2.0) {
+      // Optimized power-2 path
+      float newZi, newZr;
+      if (u_mode == 2) { // Burning Ship
+        newZi = 2.0 * abs(zr) * abs(zi) + ci;
+        newZr = zr2 - zi2 + cr;
+      } else if (u_mode == 3) { // Tricorn
+        newZi = -2.0 * zr * zi + ci;
+        newZr = zr2 - zi2 + cr;
+      } else {
+        newZi = 2.0 * zr * zi + ci;
+        newZr = zr2 - zi2 + cr;
+      }
+      zr = newZr;
+      zi = newZi;
+    } else {
+      // General power
+      vec2 zn = cpow(vec2(zr, zi), u_power);
+      zr = zn.x + cr;
+      zi = zn.y + ci;
+    }
+
+    zr2 = zr * zr;
+    zi2 = zi * zi;
+    iter++;
+  }
+
+  if (iter >= u_maxIter) {
+    // Interior
+    if (u_interiorColor == 1) {
+      fragColor = vec4(1.0);
+    } else if (u_interiorColor == 2) {
+      float v = sqrt(zr2 + zi2) * 0.08;
+      fragColor = vec4(v, v * 0.5, v * 2.0, 1.0);
+    } else {
+      fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+  } else {
+    float t;
+    if (u_smooth == 1 && u_power == 2.0) {
+      float log_zn = log(zr2 + zi2) * 0.5;
+      float nu = log(log_zn / log(bailout)) / log(2.0);
+      t = (float(iter) + 1.0 - nu) / float(u_maxIter);
+    } else {
+      t = float(iter) / float(u_maxIter);
+    }
+    float offset = u_colorOffset / 360.0 + u_time;
+    vec3 col = getColor(t, u_colorScheme, offset);
+    fragColor = vec4(col, 1.0);
+  }
+}
+</script>
+
+<script>
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+if (!gl) { document.body.innerHTML = '<h1 style="color:red;padding:40px">WebGL 2 not supported</h1>'; }
+
+// State
+let state = {
+  centerX: -0.5, centerY: 0,
+  zoom: 1,
+  maxIter: 200,
+  power: 2,
+  bailout: 4,
+  colorScheme: 0,
+  colorCycle: 1,
+  colorOffset: 0,
+  interiorColor: 0,
+  mode: 0,
+  juliaR: -0.7, juliaI: 0.27,
+  smoothColor: true,
+  animateColors: false,
+  zoomSpeed: 0.1,
+};
+
+let animOffset = 0;
+let needsRender = true;
+let isDragging = false;
+let dragStartX, dragStartY, dragCenterX, dragCenterY;
+let lastFrame = performance.now();
+let frameCount = 0;
+let fpsDisplay = 0;
+let fpsTimer = 0;
+
+// --- WebGL Setup ---
+function compileShader(src, type) {
+  src = src.trim();
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const err = gl.getShaderInfoLog(s);
+    console.error('Shader error:', err);
+    document.body.insertAdjacentHTML('afterbegin',
+      '<pre style="position:fixed;top:0;left:0;z-index:999;background:red;color:white;padding:20px;max-width:100vw;overflow:auto">' +
+      err + '</pre>');
+    return null;
+  }
+  return s;
+}
+
+const vs = compileShader(document.getElementById('vs').textContent, gl.VERTEX_SHADER);
+const fs = compileShader(document.getElementById('fs').textContent, gl.FRAGMENT_SHADER);
+const prog = gl.createProgram();
+gl.attachShader(prog, vs);
+gl.attachShader(prog, fs);
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  const err = gl.getProgramInfoLog(prog);
+  console.error('Link error:', err);
+  document.body.insertAdjacentHTML('afterbegin',
+    '<pre style="position:fixed;top:0;left:0;z-index:999;background:red;color:white;padding:20px">' + err + '</pre>');
+}
+gl.useProgram(prog);
+
+// Fullscreen quad
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+// Uniforms
+const u = {};
+['u_resolution','u_center','u_zoom','u_maxIter','u_power','u_bailout',
+ 'u_colorScheme','u_colorCycle','u_colorOffset','u_interiorColor',
+ 'u_mode','u_julia','u_smooth','u_time'].forEach(name => {
+  u[name] = gl.getUniformLocation(prog, name);
+});
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = window.innerWidth * dpr;
+  canvas.height = window.innerHeight * dpr;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  needsRender = true;
+}
+window.addEventListener('resize', resize);
+resize();
+
+function render() {
+  gl.uniform2f(u.u_resolution, canvas.width, canvas.height);
+  gl.uniform2f(u.u_center, state.centerX, state.centerY);
+  gl.uniform1f(u.u_zoom, state.zoom);
+  gl.uniform1i(u.u_maxIter, state.maxIter);
+  gl.uniform1f(u.u_power, state.power);
+  gl.uniform1f(u.u_bailout, state.bailout);
+  gl.uniform1i(u.u_colorScheme, state.colorScheme);
+  gl.uniform1f(u.u_colorCycle, state.colorCycle);
+  gl.uniform1f(u.u_colorOffset, state.colorOffset);
+  gl.uniform1i(u.u_interiorColor, state.interiorColor);
+  gl.uniform1i(u.u_mode, state.mode);
+  gl.uniform2f(u.u_julia, state.juliaR, state.juliaI);
+  gl.uniform1i(u.u_smooth, state.smoothColor ? 1 : 0);
+  gl.uniform1f(u.u_time, state.animateColors ? animOffset : 0.0);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// Screen coords to fractal coords
+function screenToFractal(px, py) {
+  const w = window.innerWidth, h = window.innerHeight;
+  const aspect = w / h;
+  const scale = 3.5 / state.zoom;
+  return {
+    x: state.centerX + (px / w - 0.5) * scale * aspect,
+    y: state.centerY + (0.5 - py / h) * scale
+  };
+}
+
+// --- Mouse events ---
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const zs = state.zoomSpeed;
+  const factor = e.deltaY < 0 ? 1 + zs : 1 / (1 + zs);
+  const pt = screenToFractal(e.clientX, e.clientY);
+  state.centerX = pt.x + (state.centerX - pt.x) / factor;
+  state.centerY = pt.y + (state.centerY - pt.y) / factor;
+  state.zoom *= factor;
+  needsRender = true;
+  updateInfo();
+}, { passive: false });
+
+canvas.addEventListener('mousedown', (e) => {
+  isDragging = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+  dragCenterX = state.centerX;
+  dragCenterY = state.centerY;
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  const pt = screenToFractal(e.clientX, e.clientY);
+  document.getElementById('info-mouse').textContent = `Mouse: ${pt.x.toFixed(10)}, ${pt.y.toFixed(10)}i`;
+
+  if (isDragging) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const scale = 3.5 / state.zoom;
+    state.centerX = dragCenterX - (e.clientX - dragStartX) / w * scale * aspect;
+    state.centerY = dragCenterY + (e.clientY - dragStartY) / h * scale;
+    needsRender = true;
+    updateInfo();
+  }
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  if (!isDragging) return;
+  const moved = Math.abs(e.clientX - dragStartX) + Math.abs(e.clientY - dragStartY);
+  isDragging = false;
+  if (moved < 3) {
+    if (e.shiftKey) {
+      const pt = screenToFractal(e.clientX, e.clientY);
+      state.juliaR = pt.x;
+      state.juliaI = pt.y;
+      document.getElementById('juliaR').value = pt.x;
+      document.getElementById('juliaI').value = pt.y;
+      document.getElementById('v-jr').textContent = pt.x.toFixed(4);
+      document.getElementById('v-ji').textContent = pt.y.toFixed(4);
+      state.mode = 1;
+      document.getElementById('mode').value = '1';
+      document.getElementById('julia-params').style.display = 'block';
+      needsRender = true;
+    } else {
+      const pt = screenToFractal(e.clientX, e.clientY);
+      state.centerX = pt.x;
+      state.centerY = pt.y;
+      needsRender = true;
+    }
+    updateInfo();
+  }
+});
+
+// --- Touch events ---
+let lastTouchDist = 0;
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    isDragging = true;
+    dragStartX = e.touches[0].clientX;
+    dragStartY = e.touches[0].clientY;
+    dragCenterX = state.centerX;
+    dragCenterY = state.centerY;
+  } else if (e.touches.length === 2) {
+    isDragging = false;
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    lastTouchDist = Math.sqrt(dx*dx + dy*dy);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 1 && isDragging) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const scale = 3.5 / state.zoom;
+    state.centerX = dragCenterX - (e.touches[0].clientX - dragStartX) / w * scale * aspect;
+    state.centerY = dragCenterY + (e.touches[0].clientY - dragStartY) / h * scale;
+    needsRender = true;
+    updateInfo();
+  } else if (e.touches.length === 2) {
+    const dx = e.touches[1].clientX - e.touches[0].clientX;
+    const dy = e.touches[1].clientY - e.touches[0].clientY;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    const factor = dist / lastTouchDist;
+    const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    const pt = screenToFractal(cx, cy);
+    state.centerX = pt.x + (state.centerX - pt.x) / factor;
+    state.centerY = pt.y + (state.centerY - pt.y) / factor;
+    state.zoom *= factor;
+    lastTouchDist = dist;
+    needsRender = true;
+    updateInfo();
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => { isDragging = false; });
+
+// --- Controls ---
+function bindSlider(id, key, valId, fmt) {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    state[key] = parseFloat(el.value);
+    document.getElementById(valId).textContent = fmt ? fmt(state[key]) : state[key];
+    needsRender = true;
+  });
+}
+
+bindSlider('zoomSpeed', 'zoomSpeed', 'v-zspeed', v => v.toFixed(2));
+bindSlider('maxIter', 'maxIter', 'v-iter');
+bindSlider('power', 'power', 'v-power', v => v.toFixed(1));
+bindSlider('bailout', 'bailout', 'v-bail', v => v.toFixed(1));
+bindSlider('colorCycle', 'colorCycle', 'v-cycle', v => v.toFixed(1));
+bindSlider('colorOffset', 'colorOffset', 'v-offset');
+bindSlider('juliaR', 'juliaR', 'v-jr', v => v.toFixed(4));
+bindSlider('juliaI', 'juliaI', 'v-ji', v => v.toFixed(4));
+
+document.getElementById('colorScheme').addEventListener('change', (e) => {
+  state.colorScheme = parseInt(e.target.value); needsRender = true;
+});
+document.getElementById('interiorColor').addEventListener('change', (e) => {
+  state.interiorColor = parseInt(e.target.value); needsRender = true;
+});
+document.getElementById('mode').addEventListener('change', (e) => {
+  state.mode = parseInt(e.target.value);
+  document.getElementById('julia-params').style.display = state.mode === 1 ? 'block' : 'none';
+  needsRender = true;
+});
+document.getElementById('smoothColor').addEventListener('change', (e) => {
+  state.smoothColor = e.target.checked; needsRender = true;
+});
+document.getElementById('animateColors').addEventListener('change', (e) => {
+  state.animateColors = e.target.checked; needsRender = true;
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  state.centerX = -0.5; state.centerY = 0; state.zoom = 1;
+  needsRender = true; updateInfo();
+});
+
+document.getElementById('saveBtn').addEventListener('click', () => {
+  render(); // ensure current frame is drawn
+  const link = document.createElement('a');
+  link.download = 'mandelbrot.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+
+document.getElementById('toggle-btn').addEventListener('click', () => {
+  document.getElementById('controls').classList.toggle('hidden');
+});
+
+function updateInfo() {
+  document.getElementById('info-center').textContent =
+    `Center: ${state.centerX.toFixed(10)}, ${state.centerY.toFixed(10)}i`;
+  document.getElementById('info-zoom').textContent =
+    `Zoom: ${state.zoom < 1000 ? state.zoom.toFixed(2) : state.zoom.toExponential(2)}x`;
+}
+
+// --- Render loop ---
+function frame(ts) {
+  if (state.animateColors) {
+    animOffset += 0.003;
+    needsRender = true;
+  }
+
+  if (needsRender) {
+    needsRender = false;
+    render();
+  }
+
+  // FPS counter (averaged over ~500ms)
+  frameCount++;
+  if (ts - fpsTimer > 500) {
+    fpsDisplay = (frameCount / ((ts - fpsTimer) / 1000)).toFixed(0);
+    document.getElementById('info-fps').textContent = `FPS: ${fpsDisplay}`;
+    frameCount = 0;
+    fpsTimer = ts;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+updateInfo();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
