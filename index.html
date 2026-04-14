@@ -122,10 +122,16 @@
     </div>
   </div>
 
+  <div class="group" id="3d-controls" style="display:none">
+    <label>3D Height Scale <span class="val" id="v-hscale">0.40</span></label>
+    <input type="range" id="heightScale" min="0.05" max="1.5" value="0.4" step="0.05">
+  </div>
+
   <div class="group">
     <label><input type="checkbox" id="smoothColor" checked> Smooth coloring</label>
     <label style="margin-top:4px"><input type="checkbox" id="animateColors"> Animate colors</label>
     <label style="margin-top:4px">Press <b>C</b> to toggle mouse-follow mode</label>
+    <label style="margin-top:4px">Hold <b>R</b> + move mouse to tilt into 3D</label>
   </div>
 
   <div class="group">
@@ -155,14 +161,14 @@ in vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
 </script>
 
-<!-- Fragment shader - ALL fractal math runs here on the GPU -->
+<!-- Fragment shader - fractal computation, outputs color + height -->
 <script id="fs" type="x-shader/x-fragment">
 #version 300 es
 precision highp float;
 
 uniform vec2 u_resolution;
-uniform vec2 u_center_hi;  // high bits of center (float32 main value)
-uniform vec2 u_center_lo;  // low bits of center (float32 error term)
+uniform vec2 u_center_hi;
+uniform vec2 u_center_lo;
 uniform float u_zoom;
 uniform int u_maxIter;
 uniform float u_power;
@@ -171,17 +177,13 @@ uniform int u_colorScheme;
 uniform float u_colorCycle;
 uniform float u_colorOffset;
 uniform int u_interiorColor;
-uniform int u_mode; // 0=mandelbrot, 1=julia, 2=burning, 3=tricorn
+uniform int u_mode;
 uniform vec2 u_julia;
 uniform int u_smooth;
 uniform float u_time;
 
 out vec4 fragColor;
 
-// Double-single arithmetic: represent a number as (hi + lo) for ~48-bit precision
-// hi carries the main value, lo carries the rounding error
-
-// Add two double-single numbers
 vec2 ds_add(vec2 a, vec2 b) {
   float s = a.x + b.x;
   float v = s - a.x;
@@ -189,12 +191,9 @@ vec2 ds_add(vec2 a, vec2 b) {
   return vec2(s, t);
 }
 
-// Multiply two double-single numbers
 vec2 ds_mul(vec2 a, vec2 b) {
   float p = a.x * b.x;
-  // Error term: use split multiplication since fma isn't available
-  // Split a.x into high and low 12-bit parts
-  float c = 4097.0 * a.x;  // 2^12 + 1
+  float c = 4097.0 * a.x;
   float ah = c - (c - a.x);
   float al = a.x - ah;
   float d = 4097.0 * b.x;
@@ -204,12 +203,10 @@ vec2 ds_mul(vec2 a, vec2 b) {
   return vec2(p, e);
 }
 
-// Subtract: a - b
 vec2 ds_sub(vec2 a, vec2 b) {
   return ds_add(a, vec2(-b.x, -b.y));
 }
 
-// Create a double-single from a single float
 vec2 ds_set(float a) {
   return vec2(a, 0.0);
 }
@@ -231,40 +228,26 @@ vec3 hsl2rgb(float h, float s, float l) {
 
 vec3 getColor(float t, int scheme, float offset) {
   t = t * u_colorCycle + offset;
-  if (scheme == 0) { // Smooth Rainbow
+  if (scheme == 0) {
     return hsl2rgb(t, 0.8, 0.5);
-  } else if (scheme == 1) { // Fire
+  } else if (scheme == 1) {
     float ft = fract(t);
-    return vec3(
-      min(1.0, ft * 2.4),
-      max(0.0, min(1.0, (ft - 0.3) * 2.4)),
-      max(0.0, min(1.0, (ft - 0.6) * 2.4))
-    );
-  } else if (scheme == 2) { // Ocean
+    return vec3(min(1.0, ft * 2.4), max(0.0, min(1.0, (ft - 0.3) * 2.4)), max(0.0, min(1.0, (ft - 0.6) * 2.4)));
+  } else if (scheme == 2) {
     return hsl2rgb((200.0 + t * 60.0) / 360.0, 0.7 + sin(t * 6.28) * 0.3, 0.2 + fract(t) * 0.5);
-  } else if (scheme == 3) { // Electric
+  } else if (scheme == 3) {
     float phase = t * 6.28318;
-    return vec3(
-      sin(phase) * 0.5 + 0.5,
-      sin(phase + 2.094) * 0.5 + 0.5,
-      sin(phase + 4.189) * 0.5 + 0.5
-    );
-  } else if (scheme == 4) { // Psychedelic
+    return vec3(sin(phase) * 0.5 + 0.5, sin(phase + 2.094) * 0.5 + 0.5, sin(phase + 4.189) * 0.5 + 0.5);
+  } else if (scheme == 4) {
     return hsl2rgb(t * 3.0, 1.0, 0.5);
-  } else if (scheme == 5) { // Grayscale
-    float v = fract(t);
-    return vec3(v);
-  } else { // Neon
+  } else if (scheme == 5) {
+    return vec3(fract(t));
+  } else {
     float p = t * 6.28318;
-    return vec3(
-      pow(sin(p), 2.0),
-      pow(sin(p + 1.5), 2.0),
-      pow(sin(p + 3.0), 2.0) * 0.784 + 0.216
-    );
+    return vec3(pow(sin(p), 2.0), pow(sin(p + 1.5), 2.0), pow(sin(p + 3.0), 2.0) * 0.784 + 0.216);
   }
 }
 
-// Complex power for arbitrary exponents
 vec2 cpow(vec2 z, float n) {
   float r = length(z);
   if (r == 0.0) return vec2(0.0);
@@ -278,79 +261,48 @@ void main() {
   float aspect = u_resolution.x / u_resolution.y;
   float scale = 3.5 / u_zoom;
 
-  // Map pixel to complex plane using double-single precision
-  // The pixel offset from center is small enough for float32,
-  // but the center itself needs full precision
   float px_offset_x = (uv.x / u_resolution.x - 0.5) * scale * aspect;
   float px_offset_y = (uv.y / u_resolution.y - 0.5) * scale;
 
-  // Add pixel offset to double-single center: center_ds + offset
   vec2 cx_ds = ds_add(vec2(u_center_hi.x, u_center_lo.x), ds_set(px_offset_x));
   vec2 cy_ds = ds_add(vec2(u_center_hi.y, u_center_lo.y), ds_set(px_offset_y));
 
-  // For iteration, collapse to float32 — iteration precision is less critical
-  // than position precision (which determines WHICH point we're iterating)
   float cx = cx_ds.x + cx_ds.y;
   float cy = cy_ds.x + cy_ds.y;
 
   float zr, zi, cr, ci;
+  if (u_mode == 1) { zr = cx; zi = cy; cr = u_julia.x; ci = u_julia.y; }
+  else { zr = 0.0; zi = 0.0; cr = cx; ci = cy; }
 
-  if (u_mode == 1) { // Julia
-    zr = cx; zi = cy;
-    cr = u_julia.x; ci = u_julia.y;
-  } else {
-    zr = 0.0; zi = 0.0;
-    cr = cx; ci = cy;
-  }
-
-  float zr2 = zr * zr;
-  float zi2 = zi * zi;
+  float zr2 = zr * zr, zi2 = zi * zi;
   int iter = 0;
   float bailout = u_bailout;
 
-  // Use a compile-time max loop with runtime break (GLSL requires constant loop bounds)
-  // 2000 matches the max slider value
   for (int i = 0; i < 2000; i++) {
     if (i >= u_maxIter) break;
     if (zr2 + zi2 > bailout) break;
-
     if (u_power == 2.0) {
-      // Optimized power-2 path
       float newZi, newZr;
-      if (u_mode == 2) { // Burning Ship
-        newZi = 2.0 * abs(zr) * abs(zi) + ci;
-        newZr = zr2 - zi2 + cr;
-      } else if (u_mode == 3) { // Tricorn
-        newZi = -2.0 * zr * zi + ci;
-        newZr = zr2 - zi2 + cr;
-      } else {
-        newZi = 2.0 * zr * zi + ci;
-        newZr = zr2 - zi2 + cr;
-      }
-      zr = newZr;
-      zi = newZi;
+      if (u_mode == 2) { newZi = 2.0 * abs(zr) * abs(zi) + ci; newZr = zr2 - zi2 + cr; }
+      else if (u_mode == 3) { newZi = -2.0 * zr * zi + ci; newZr = zr2 - zi2 + cr; }
+      else { newZi = 2.0 * zr * zi + ci; newZr = zr2 - zi2 + cr; }
+      zr = newZr; zi = newZi;
     } else {
-      // General power
       vec2 zn = cpow(vec2(zr, zi), u_power);
-      zr = zn.x + cr;
-      zi = zn.y + ci;
+      zr = zn.x + cr; zi = zn.y + ci;
     }
-
-    zr2 = zr * zr;
-    zi2 = zi * zi;
+    zr2 = zr * zr; zi2 = zi * zi;
     iter++;
   }
 
+  float height = 0.0;  // interior = ground level
+
   if (iter >= u_maxIter) {
-    // Interior
-    if (u_interiorColor == 1) {
-      fragColor = vec4(1.0);
-    } else if (u_interiorColor == 2) {
-      float v = sqrt(zr2 + zi2) * 0.08;
-      fragColor = vec4(v, v * 0.5, v * 2.0, 1.0);
-    } else {
-      fragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    }
+    vec3 col;
+    if (u_interiorColor == 1) col = vec3(1.0);
+    else if (u_interiorColor == 2) { float v = sqrt(zr2 + zi2) * 0.08; col = vec3(v, v*0.5, v*2.0); }
+    else col = vec3(0.0);
+    fragColor = vec4(col, height);
   } else {
     float t;
     if (u_smooth == 1 && u_power == 2.0) {
@@ -360,10 +312,133 @@ void main() {
     } else {
       t = float(iter) / float(u_maxIter);
     }
+    // Height: invert so low iteration = tall (boundary is most interesting)
+    height = 1.0 - t;
     float offset = u_colorOffset / 360.0 + u_time;
     vec3 col = getColor(t, u_colorScheme, offset);
-    fragColor = vec4(col, 1.0);
+    fragColor = vec4(col, height);
   }
+}
+</script>
+
+<!-- Fragment shader for 3D height-field ray marching -->
+<script id="fs3d" type="x-shader/x-fragment">
+#version 300 es
+precision highp float;
+
+uniform sampler2D u_heightMap;
+uniform vec2 u_resolution;
+uniform float u_pitch;
+uniform float u_yaw;
+uniform float u_heightScale;
+
+out vec4 fragColor;
+
+void main() {
+  vec2 uv = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
+  float aspect = u_resolution.x / u_resolution.y;
+  uv.x *= aspect;
+
+  // Height field spans [0, aspect] x [0, 1] in world XY
+  // so it matches the screen proportions exactly when viewed top-down.
+  // Texture UV = (world_x / aspect, world_y)
+
+  // Smooth transition: height gradually appears with pitch
+  float tiltAmount = smoothstep(0.0, 0.3, u_pitch);
+  float effectiveHeight = u_heightScale * tiltAmount;
+
+  // Camera: orbit distance chosen so top-down fills the screen exactly
+  float fov = 0.5;
+  float dist = 0.5 / fov;  // = 1.0
+  float cp = cos(u_pitch), sp = sin(u_pitch);
+  float cy = cos(u_yaw), sy = sin(u_yaw);
+
+  vec3 center = vec3(aspect * 0.5, 0.5, effectiveHeight * 0.25);
+  vec3 eye = center + dist * vec3(sp * sy, sp * cy, cp);
+
+  vec3 fwd = normalize(center - eye);
+  vec3 right = vec3(cos(u_yaw), -sin(u_yaw), 0.0);
+  vec3 up = cross(right, fwd);
+
+  vec3 rd = normalize(fwd + uv.x * right * fov + uv.y * up * fov);
+  vec3 ro = eye;
+
+  // Ray march the height field
+  float t = 0.0;
+  float tMax = 5.0;
+  float dt = tMax / 256.0;
+  bool hit = false;
+  vec3 pos;
+
+  for (int i = 0; i < 256; i++) {
+    pos = ro + rd * t;
+
+    if (pos.x >= 0.0 && pos.x <= aspect && pos.y >= 0.0 && pos.y <= 1.0) {
+      vec2 texUV = vec2(pos.x / aspect, pos.y);
+      float h = texture(u_heightMap, texUV).a * effectiveHeight;
+      if (pos.z <= h) {
+        hit = true;
+        break;
+      }
+    } else if (t > 0.3 && pos.z < -0.1) {
+      break;
+    }
+
+    t += dt;
+  }
+
+  if (!hit) {
+    // Background: darken with tilt, transparent at top-down
+    float bgAlpha = tiltAmount;
+    float sky = max(0.0, rd.z * 0.5 + 0.5);
+    vec3 bg = vec3(0.02, 0.02, 0.05) + sky * vec3(0.03, 0.03, 0.08);
+    fragColor = vec4(bg, bgAlpha);
+    return;
+  }
+
+  // Binary search refinement
+  float lo = t - dt, hi = t;
+  for (int i = 0; i < 10; i++) {
+    float mid = (lo + hi) * 0.5;
+    pos = ro + rd * mid;
+    vec2 texUV = vec2(pos.x / aspect, pos.y);
+    float h = texture(u_heightMap, texUV).a * effectiveHeight;
+    if (pos.z <= h) hi = mid; else lo = mid;
+  }
+  t = (lo + hi) * 0.5;
+  pos = ro + rd * t;
+  vec2 hitUV = vec2(pos.x / aspect, pos.y);
+
+  // Normal from height gradient
+  vec2 texel = 1.0 / vec2(textureSize(u_heightMap, 0));
+  float hL = texture(u_heightMap, hitUV + vec2(-texel.x, 0.0)).a * effectiveHeight;
+  float hR = texture(u_heightMap, hitUV + vec2( texel.x, 0.0)).a * effectiveHeight;
+  float hD = texture(u_heightMap, hitUV + vec2(0.0, -texel.y)).a * effectiveHeight;
+  float hU = texture(u_heightMap, hitUV + vec2(0.0,  texel.y)).a * effectiveHeight;
+  vec3 normal = normalize(vec3(
+    (hL - hR) / (2.0 * texel.x),
+    (hD - hU) / (2.0 * texel.y),
+    1.0
+  ));
+
+  // Lighting — smoothly fade in with tilt
+  vec3 lightDir = normalize(vec3(0.4, 0.3, 0.8));
+  float diff = max(dot(normal, lightDir), 0.0);
+  float amb = 0.25;
+  vec3 viewDir = normalize(eye - pos);
+  vec3 halfDir = normalize(lightDir + viewDir);
+  float spec = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.3;
+
+  vec3 col = texture(u_heightMap, hitUV).rgb;
+  // At tiltAmount=0: col * 1.0 (flat, no lighting). At tiltAmount=1: full lighting.
+  float lit = mix(1.0, amb + diff * 0.75, tiltAmount);
+  col = col * lit + vec3(spec * tiltAmount);
+
+  // Distance fog — also fades in with tilt
+  float fog = mix(1.0, exp(-t * 0.4), tiltAmount);
+  col = mix(vec3(0.02, 0.02, 0.05), col, fog);
+
+  fragColor = vec4(col, 1.0);
 }
 </script>
 
@@ -389,10 +464,14 @@ let state = {
   animateColors: false,
   followMouse: false,
   zoomSpeed: 0.1,
+  camPitch: 0.0,   // radians from vertical (0 = top-down, pi/2 = side)
+  camYaw: 0.0,
+  heightScale: 0.4,
 };
 
 let mouseX = window.innerWidth / 2;
 let mouseY = window.innerHeight / 2;
+let rKeyDown = false;
 
 let animOffset = 0;
 let needsRender = true;
@@ -413,50 +492,107 @@ function compileShader(src, type) {
     const err = gl.getShaderInfoLog(s);
     console.error('Shader error:', err);
     document.body.insertAdjacentHTML('afterbegin',
-      '<pre style="position:fixed;top:0;left:0;z-index:999;background:red;color:white;padding:20px;max-width:100vw;overflow:auto">' +
+      '<pre style="position:fixed;top:0;left:0;z-index:999;background:red;color:white;padding:20px;max-width:100vw;overflow:auto;white-space:pre-wrap">' +
       err + '</pre>');
     return null;
   }
   return s;
 }
 
-const vs = compileShader(document.getElementById('vs').textContent, gl.VERTEX_SHADER);
-const fs = compileShader(document.getElementById('fs').textContent, gl.FRAGMENT_SHADER);
-const prog = gl.createProgram();
-gl.attachShader(prog, vs);
-gl.attachShader(prog, fs);
-gl.linkProgram(prog);
-if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-  const err = gl.getProgramInfoLog(prog);
-  console.error('Link error:', err);
-  document.body.insertAdjacentHTML('afterbegin',
-    '<pre style="position:fixed;top:0;left:0;z-index:999;background:red;color:white;padding:20px">' + err + '</pre>');
+function createProgram(vsSrc, fsSrc) {
+  const vs = compileShader(vsSrc, gl.VERTEX_SHADER);
+  const fs = compileShader(fsSrc, gl.FRAGMENT_SHADER);
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    const err = gl.getProgramInfoLog(p);
+    console.error('Link error:', err);
+    document.body.insertAdjacentHTML('afterbegin',
+      '<pre style="position:fixed;top:0;left:0;z-index:999;background:red;color:white;padding:20px">' + err + '</pre>');
+  }
+  return p;
 }
-gl.useProgram(prog);
 
-// Fullscreen quad
+const vsSrc = document.getElementById('vs').textContent;
+const fsSrc = document.getElementById('fs').textContent;
+const fs3dSrc = document.getElementById('fs3d').textContent;
+
+// Program 1: fractal computation
+const fractalProg = createProgram(vsSrc, fsSrc);
+// Program 2: 3D ray marching
+const prog3D = createProgram(vsSrc, fs3dSrc);
+
+// Fullscreen quad (shared by both programs)
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(prog, 'a_pos');
-gl.enableVertexAttribArray(aPos);
-gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
-// Uniforms
+function setupAttrib(program) {
+  const aPos = gl.getAttribLocation(program, 'a_pos');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+}
+
+// Fractal uniforms
 const u = {};
 ['u_resolution','u_center_hi','u_center_lo','u_zoom','u_maxIter','u_power','u_bailout',
  'u_colorScheme','u_colorCycle','u_colorOffset','u_interiorColor',
  'u_mode','u_julia','u_smooth','u_time'].forEach(name => {
-  u[name] = gl.getUniformLocation(prog, name);
+  u[name] = gl.getUniformLocation(fractalProg, name);
 });
 
-// Split a float64 into two float32s: hi + lo = value
-// hi gets the value rounded to float32, lo gets the remainder
+// 3D uniforms
+const u3 = {};
+['u_heightMap','u_resolution','u_pitch','u_yaw','u_heightScale'].forEach(name => {
+  u3[name] = gl.getUniformLocation(prog3D, name);
+});
+
 function splitDouble(v) {
   const hi = Math.fround(v);
   const lo = v - hi;
   return [hi, lo];
 }
+
+// --- Framebuffer for render-to-texture (3D mode) ---
+let fbo = null;
+let fboTexture = null;
+let fboWidth = 0, fboHeight = 0;
+
+function setupFBO(w, h) {
+  if (fboTexture) gl.deleteTexture(fboTexture);
+  if (fbo) gl.deleteFramebuffer(fbo);
+
+  fboTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, fboTexture);
+  // Use RGBA16F for better height precision in alpha channel
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTexture, 0);
+
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    console.warn('FBO incomplete with RGBA16F, falling back to RGBA8');
+    // Fallback to RGBA8
+    gl.bindTexture(gl.TEXTURE_2D, fboTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTexture, 0);
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  fboWidth = w;
+  fboHeight = h;
+}
+
+// Need EXT_color_buffer_float for rendering to float textures
+gl.getExtension('EXT_color_buffer_float');
 
 function resize() {
   const dpr = window.devicePixelRatio || 1;
@@ -465,12 +601,20 @@ function resize() {
   canvas.style.width = window.innerWidth + 'px';
   canvas.style.height = window.innerHeight + 'px';
   gl.viewport(0, 0, canvas.width, canvas.height);
+  setupFBO(canvas.width, canvas.height);
   needsRender = true;
 }
 window.addEventListener('resize', resize);
 resize();
 
-function render() {
+function renderFractal(toFBO) {
+  if (toFBO) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  }
+
+  gl.useProgram(fractalProg);
+  setupAttrib(fractalProg);
+
   const [cxHi, cxLo] = splitDouble(state.centerX);
   const [cyHi, cyLo] = splitDouble(state.centerY);
   gl.uniform2f(u.u_resolution, canvas.width, canvas.height);
@@ -490,6 +634,34 @@ function render() {
   gl.uniform1f(u.u_time, state.animateColors ? animOffset : 0.0);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  if (toFBO) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+}
+
+function render3D() {
+  gl.useProgram(prog3D);
+  setupAttrib(prog3D);
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, fboTexture);
+  gl.uniform1i(u3.u_heightMap, 0);
+  gl.uniform2f(u3.u_resolution, canvas.width, canvas.height);
+  gl.uniform1f(u3.u_pitch, state.camPitch);
+  gl.uniform1f(u3.u_yaw, state.camYaw);
+  gl.uniform1f(u3.u_heightScale, state.heightScale);
+
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+function render() {
+  if (state.camPitch > 0.005) {
+    renderFractal(true);   // pass 1: fractal to texture
+    render3D();            // pass 2: ray march the height field
+  } else {
+    renderFractal(false);  // direct to screen (pure 2D)
+  }
 }
 
 // Screen coords to fractal coords
@@ -517,6 +689,7 @@ canvas.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 canvas.addEventListener('mousedown', (e) => {
+  if (rKeyDown) return; // don't start drag while rotating
   isDragging = true;
   dragStartX = e.clientX;
   dragStartY = e.clientY;
@@ -525,8 +698,16 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
+  // 3D camera rotation while R is held
+  if (rKeyDown) {
+    state.camYaw += e.movementX * 0.005;
+    state.camPitch = Math.max(0.0, Math.min(1.5, state.camPitch - e.movementY * 0.005));
+    document.getElementById('3d-controls').style.display = state.camPitch > 0.005 ? 'block' : 'none';
+    needsRender = true;
+    return;
+  }
+
   if (state.followMouse && document.pointerLockElement) {
-    // Pointer is locked — use movement deltas to pan
     const w = window.innerWidth, h = window.innerHeight;
     const aspect = w / h;
     const scale = 3.5 / state.zoom;
@@ -646,6 +827,7 @@ bindSlider('colorCycle', 'colorCycle', 'v-cycle', v => v.toFixed(1));
 bindSlider('colorOffset', 'colorOffset', 'v-offset');
 bindSlider('juliaR', 'juliaR', 'v-jr', v => v.toFixed(4));
 bindSlider('juliaI', 'juliaI', 'v-ji', v => v.toFixed(4));
+bindSlider('heightScale', 'heightScale', 'v-hscale', v => v.toFixed(2));
 
 document.getElementById('colorScheme').addEventListener('change', (e) => {
   state.colorScheme = parseInt(e.target.value); needsRender = true;
@@ -664,14 +846,13 @@ document.getElementById('smoothColor').addEventListener('change', (e) => {
 document.getElementById('animateColors').addEventListener('change', (e) => {
   state.animateColors = e.target.checked; needsRender = true;
 });
+
 window.addEventListener('keydown', (e) => {
   if (e.key === 'c' || e.key === 'C') {
     if (state.followMouse) {
-      // Toggle off — release pointer lock
       state.followMouse = false;
       document.exitPointerLock();
     } else {
-      // Toggle on — center on current mouse position, then lock pointer
       const pt = screenToFractal(mouseX, mouseY);
       state.centerX = pt.x;
       state.centerY = pt.y;
@@ -682,9 +863,17 @@ window.addEventListener('keydown', (e) => {
       updateInfo();
     }
   }
+  if ((e.key === 'r' || e.key === 'R') && !e.repeat) {
+    rKeyDown = true;
+  }
 });
 
-// Also turn off follow mode if pointer lock is exited externally (e.g. pressing Escape)
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'r' || e.key === 'R') {
+    rKeyDown = false;
+  }
+});
+
 document.addEventListener('pointerlockchange', () => {
   if (!document.pointerLockElement) {
     state.followMouse = false;
@@ -694,11 +883,12 @@ document.addEventListener('pointerlockchange', () => {
 
 document.getElementById('resetBtn').addEventListener('click', () => {
   state.centerX = -0.5; state.centerY = 0; state.zoom = 1;
+  state.camPitch = 0.0; state.camYaw = 0.0;
   needsRender = true; updateInfo();
 });
 
 document.getElementById('saveBtn').addEventListener('click', () => {
-  render(); // ensure current frame is drawn
+  render();
   const link = document.createElement('a');
   link.download = 'mandelbrot.png';
   link.href = canvas.toDataURL('image/png');
@@ -709,7 +899,7 @@ const toggleBtn = document.getElementById('toggle-btn');
 const closeBtn = document.getElementById('close-btn');
 const controlsPanel = document.getElementById('controls');
 
-toggleBtn.style.display = 'none'; // hidden while panel is open
+toggleBtn.style.display = 'none';
 
 closeBtn.addEventListener('click', () => {
   controlsPanel.classList.add('hidden');
@@ -740,7 +930,6 @@ function frame(ts) {
     render();
   }
 
-  // FPS counter (averaged over ~500ms)
   frameCount++;
   if (ts - fpsTimer > 500) {
     fpsDisplay = (frameCount / ((ts - fpsTimer) / 1000)).toFixed(0);
