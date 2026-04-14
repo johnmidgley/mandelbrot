@@ -170,6 +170,7 @@ uniform vec2 u_resolution;
 uniform vec2 u_center_hi;
 uniform vec2 u_center_lo;
 uniform float u_zoom;
+uniform vec2 u_viewScale;  // (padW, padH) — expanded FOV for rotation
 uniform int u_maxIter;
 uniform float u_power;
 uniform float u_bailout;
@@ -261,8 +262,8 @@ void main() {
   float aspect = u_resolution.x / u_resolution.y;
   float scale = 3.5 / u_zoom;
 
-  float px_offset_x = (uv.x / u_resolution.x - 0.5) * scale * aspect;
-  float px_offset_y = (uv.y / u_resolution.y - 0.5) * scale;
+  float px_offset_x = (uv.x / u_resolution.x - 0.5) * scale * u_viewScale.x;
+  float px_offset_y = (uv.y / u_resolution.y - 0.5) * scale * u_viewScale.y;
 
   vec2 cx_ds = ds_add(vec2(u_center_hi.x, u_center_lo.x), ds_set(px_offset_x));
   vec2 cy_ds = ds_add(vec2(u_center_hi.y, u_center_lo.y), ds_set(px_offset_y));
@@ -331,17 +332,25 @@ uniform vec2 u_resolution;
 uniform vec3 u_camDir;
 uniform vec2 u_camRight;
 uniform float u_heightScale;
+uniform vec2 u_viewScale;  // (padW, padH) matching fractal shader
 
 out vec4 fragColor;
+
+// Convert world pos to texture UV, accounting for rotation padding
+vec2 worldToUV(vec3 p, float aspect, vec2 vs) {
+  return vec2((p.x - aspect * 0.5) / vs.x + 0.5,
+              (p.y - 0.5) / vs.y + 0.5);
+}
 
 void main() {
   vec2 uv = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
   float aspect = u_resolution.x / u_resolution.y;
   uv.x *= aspect;
 
-  // Height field spans [0, aspect] x [0, 1] in world XY
-  // so it matches the screen proportions exactly when viewed top-down.
-  // Texture UV = (world_x / aspect, world_y)
+  // Padded world half-extents
+  float hw = u_viewScale.x * 0.5;
+  float hh = u_viewScale.y * 0.5;
+  float wcx = aspect * 0.5, wcy = 0.5;
 
   // Smooth transition: height gradually appears with pitch
   float pitch = acos(clamp(u_camDir.z, -1.0, 1.0));
@@ -352,7 +361,7 @@ void main() {
   float fov = 0.5;
   float dist = 0.5 / fov;  // = 1.0
 
-  vec3 center = vec3(aspect * 0.5, 0.5, effectiveHeight * 0.25);
+  vec3 center = vec3(wcx, wcy, effectiveHeight * 0.25);
   vec3 eye = center + dist * u_camDir;
 
   vec3 fwd = normalize(center - eye);
@@ -372,8 +381,8 @@ void main() {
   for (int i = 0; i < 256; i++) {
     pos = ro + rd * t;
 
-    if (pos.x >= 0.0 && pos.x <= aspect && pos.y >= 0.0 && pos.y <= 1.0) {
-      vec2 texUV = vec2(pos.x / aspect, pos.y);
+    if (pos.x >= wcx - hw && pos.x <= wcx + hw && pos.y >= wcy - hh && pos.y <= wcy + hh) {
+      vec2 texUV = worldToUV(pos, aspect, u_viewScale);
       float h = texture(u_heightMap, texUV).a * effectiveHeight;
       if (pos.z <= h) {
         hit = true;
@@ -400,13 +409,13 @@ void main() {
   for (int i = 0; i < 10; i++) {
     float mid = (lo + hi) * 0.5;
     pos = ro + rd * mid;
-    vec2 texUV = vec2(pos.x / aspect, pos.y);
+    vec2 texUV = worldToUV(pos, aspect, u_viewScale);
     float h = texture(u_heightMap, texUV).a * effectiveHeight;
     if (pos.z <= h) hi = mid; else lo = mid;
   }
   t = (lo + hi) * 0.5;
   pos = ro + rd * t;
-  vec2 hitUV = vec2(pos.x / aspect, pos.y);
+  vec2 hitUV = worldToUV(pos, aspect, u_viewScale);
 
   // Normal from height gradient
   vec2 texel = 1.0 / vec2(textureSize(u_heightMap, 0));
@@ -536,7 +545,7 @@ function setupAttrib(program) {
 
 // Fractal uniforms
 const u = {};
-['u_resolution','u_center_hi','u_center_lo','u_zoom','u_maxIter','u_power','u_bailout',
+['u_resolution','u_center_hi','u_center_lo','u_zoom','u_viewScale','u_maxIter','u_power','u_bailout',
  'u_colorScheme','u_colorCycle','u_colorOffset','u_interiorColor',
  'u_mode','u_julia','u_smooth','u_time'].forEach(name => {
   u[name] = gl.getUniformLocation(fractalProg, name);
@@ -544,7 +553,7 @@ const u = {};
 
 // 3D uniforms
 const u3 = {};
-['u_heightMap','u_resolution','u_camDir','u_camRight','u_heightScale'].forEach(name => {
+['u_heightMap','u_resolution','u_camDir','u_camRight','u_heightScale','u_viewScale'].forEach(name => {
   u3[name] = gl.getUniformLocation(prog3D, name);
 });
 
@@ -606,6 +615,16 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+function getViewScale() {
+  const aspect = canvas.width / canvas.height;
+  const rx = state.camRightX, ry = state.camRightY;
+  const arx = Math.abs(rx), ary = Math.abs(ry);
+  return {
+    padW: aspect * arx + ary,   // at no rotation: aspect*1 + 0 = aspect
+    padH: aspect * ary + arx    // at no rotation: aspect*0 + 1 = 1
+  };
+}
+
 function renderFractal(toFBO) {
   if (toFBO) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -616,10 +635,12 @@ function renderFractal(toFBO) {
 
   const [cxHi, cxLo] = splitDouble(state.centerX);
   const [cyHi, cyLo] = splitDouble(state.centerY);
+  const vs = getViewScale();
   gl.uniform2f(u.u_resolution, canvas.width, canvas.height);
   gl.uniform2f(u.u_center_hi, cxHi, cyHi);
   gl.uniform2f(u.u_center_lo, cxLo, cyLo);
   gl.uniform1f(u.u_zoom, state.zoom);
+  gl.uniform2f(u.u_viewScale, vs.padW, vs.padH);
   gl.uniform1i(u.u_maxIter, state.maxIter);
   gl.uniform1f(u.u_power, state.power);
   gl.uniform1f(u.u_bailout, state.bailout);
@@ -650,12 +671,14 @@ function render3D() {
   gl.uniform3f(u3.u_camDir, state.camDirX, state.camDirY, state.camDirZ);
   gl.uniform2f(u3.u_camRight, state.camRightX, state.camRightY);
   gl.uniform1f(u3.u_heightScale, state.heightScale);
+  const vs = getViewScale();
+  gl.uniform2f(u3.u_viewScale, vs.padW, vs.padH);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 
 function render() {
-  const hasCamRotation = state.camDirZ < 0.99999 || state.camRightX < 0.99999;
+  const hasCamRotation = state.camDirZ < 0.99999 || Math.abs(state.camRightX) < 0.99999;
   if (hasCamRotation) {
     renderFractal(true);   // pass 1: fractal to texture
     render3D();            // pass 2: ray march the height field
@@ -747,7 +770,7 @@ canvas.addEventListener('mousemove', (e) => {
     state.camRightX = rx / rlen; state.camRightY = ry / rlen;
 
     document.getElementById('3d-controls').style.display =
-      (state.camDirZ < 0.99999 || state.camRightX < 0.99999) ? 'block' : 'none';
+      (state.camDirZ < 0.99999 || Math.abs(state.camRightX) < 0.99999) ? 'block' : 'none';
     needsRender = true;
     return;
   }
