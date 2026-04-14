@@ -701,12 +701,22 @@ function screenToFractal(px, py) {
 // --- Mouse events ---
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const zs = state.zoomSpeed;
-  const factor = e.deltaY < 0 ? 1 + zs : 1 / (1 + zs);
-  const pt = screenToFractal(e.clientX, e.clientY);
-  state.centerX = pt.x + (state.centerX - pt.x) / factor;
-  state.centerY = pt.y + (state.centerY - pt.y) / factor;
-  state.zoom *= factor;
+  if (e.ctrlKey) {
+    // Pinch-to-zoom gesture (trackpad) or Ctrl+scroll
+    const zs = state.zoomSpeed;
+    const factor = e.deltaY < 0 ? 1 + zs : 1 / (1 + zs);
+    const pt = screenToFractal(e.clientX, e.clientY);
+    state.centerX = pt.x + (state.centerX - pt.x) / factor;
+    state.centerY = pt.y + (state.centerY - pt.y) / factor;
+    state.zoom *= factor;
+  } else {
+    // Two-finger drag (trackpad) or scroll wheel — pan
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const scale = 3.5 / state.zoom;
+    state.centerX += e.deltaX / w * scale * aspect;
+    state.centerY -= e.deltaY / h * scale;
+  }
   needsRender = true;
   updateInfo();
 }, { passive: false });
@@ -837,6 +847,7 @@ canvas.addEventListener('mouseup', (e) => {
 
 // --- Touch events ---
 let lastTouchDist = 0;
+let lastTouchMidX = 0, lastTouchMidY = 0;
 
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
@@ -851,6 +862,8 @@ canvas.addEventListener('touchstart', (e) => {
     const dx = e.touches[1].clientX - e.touches[0].clientX;
     const dy = e.touches[1].clientY - e.touches[0].clientY;
     lastTouchDist = Math.sqrt(dx*dx + dy*dy);
+    lastTouchMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    lastTouchMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
   }
 }, { passive: false });
 
@@ -869,13 +882,24 @@ canvas.addEventListener('touchmove', (e) => {
     const dy = e.touches[1].clientY - e.touches[0].clientY;
     const dist = Math.sqrt(dx*dx + dy*dy);
     const factor = dist / lastTouchDist;
-    const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-    const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-    const pt = screenToFractal(cx, cy);
+    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    // Pan from two-finger drag (midpoint movement)
+    const w = window.innerWidth, h = window.innerHeight;
+    const aspect = w / h;
+    const scale = 3.5 / state.zoom;
+    const panDx = -(midX - lastTouchMidX) / w * scale * aspect;
+    const panDy = (midY - lastTouchMidY) / h * scale;
+    state.centerX += panDx;
+    state.centerY += panDy;
+    // Zoom from pinch (distance change)
+    const pt = screenToFractal(midX, midY);
     state.centerX = pt.x + (state.centerX - pt.x) / factor;
     state.centerY = pt.y + (state.centerY - pt.y) / factor;
     state.zoom *= factor;
     lastTouchDist = dist;
+    lastTouchMidX = midX;
+    lastTouchMidY = midY;
     needsRender = true;
     updateInfo();
   }
