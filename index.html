@@ -754,8 +754,11 @@ canvas.addEventListener('mousemove', (e) => {
     const w = window.innerWidth, h = window.innerHeight;
     const aspect = w / h;
     const scale = 3.5 / state.zoom;
-    state.centerX -= e.movementX / w * scale * aspect;
-    state.centerY += e.movementY / h * scale;
+    const mx = e.movementX / w * scale * aspect;
+    const my = -e.movementY / h * scale;
+    const rx = state.camRightX, ry = state.camRightY;
+    state.centerX -= mx * rx - my * ry;
+    state.centerY -= mx * ry + my * rx;
     needsRender = true;
     updateInfo();
     return;
@@ -770,8 +773,11 @@ canvas.addEventListener('mousemove', (e) => {
     const w = window.innerWidth, h = window.innerHeight;
     const aspect = w / h;
     const scale = 3.5 / state.zoom;
-    state.centerX = dragCenterX - (e.clientX - dragStartX) / w * scale * aspect;
-    state.centerY = dragCenterY + (e.clientY - dragStartY) / h * scale;
+    const mx = (e.clientX - dragStartX) / w * scale * aspect;
+    const my = -(e.clientY - dragStartY) / h * scale;
+    const rx = state.camRightX, ry = state.camRightY;
+    state.centerX = dragCenterX - (mx * rx - my * ry);
+    state.centerY = dragCenterY - (mx * ry + my * rx);
     needsRender = true;
     updateInfo();
   }
