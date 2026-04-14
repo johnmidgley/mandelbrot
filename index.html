@@ -131,7 +131,7 @@
     <label><input type="checkbox" id="smoothColor" checked> Smooth coloring</label>
     <label style="margin-top:4px"><input type="checkbox" id="animateColors"> Animate colors</label>
     <label style="margin-top:4px">Press <b>C</b> to toggle mouse-follow mode</label>
-    <label style="margin-top:4px">Hold <b>R</b> + move mouse to tilt into 3D</label>
+    <label style="margin-top:4px">Hold <b>T</b> + move mouse to tilt into 3D, <b>R</b> to reset view</label>
   </div>
 
   <div class="group">
@@ -328,8 +328,8 @@ precision highp float;
 
 uniform sampler2D u_heightMap;
 uniform vec2 u_resolution;
-uniform float u_pitch;
-uniform float u_yaw;
+uniform vec3 u_camDir;
+uniform vec2 u_camRight;
 uniform float u_heightScale;
 
 out vec4 fragColor;
@@ -344,20 +344,19 @@ void main() {
   // Texture UV = (world_x / aspect, world_y)
 
   // Smooth transition: height gradually appears with pitch
-  float tiltAmount = smoothstep(0.0, 0.3, u_pitch);
+  float pitch = acos(clamp(u_camDir.z, -1.0, 1.0));
+  float tiltAmount = smoothstep(0.0, 0.3, pitch);
   float effectiveHeight = u_heightScale * tiltAmount;
 
   // Camera: orbit distance chosen so top-down fills the screen exactly
   float fov = 0.5;
   float dist = 0.5 / fov;  // = 1.0
-  float cp = cos(u_pitch), sp = sin(u_pitch);
-  float cy = cos(u_yaw), sy = sin(u_yaw);
 
   vec3 center = vec3(aspect * 0.5, 0.5, effectiveHeight * 0.25);
-  vec3 eye = center + dist * vec3(sp * sy, sp * cy, cp);
+  vec3 eye = center + dist * u_camDir;
 
   vec3 fwd = normalize(center - eye);
-  vec3 right = vec3(cos(u_yaw), -sin(u_yaw), 0.0);
+  vec3 right = vec3(u_camRight, 0.0);
   vec3 up = cross(right, fwd);
 
   vec3 rd = normalize(fwd + uv.x * right * fov + uv.y * up * fov);
@@ -464,14 +463,14 @@ let state = {
   animateColors: false,
   followMouse: false,
   zoomSpeed: 0.1,
-  camPitch: 0.0,   // radians from vertical (0 = top-down, pi/2 = side)
-  camYaw: 0.0,
+  camDirX: 0.0, camDirY: 0.0, camDirZ: 1.0,  // unit vector from center to eye (0,0,1 = top-down)
+  camRightX: 1.0, camRightY: 0.0,           // tracked right vector (horizontal, perpendicular to camDir)
   heightScale: 0.4,
 };
 
 let mouseX = window.innerWidth / 2;
 let mouseY = window.innerHeight / 2;
-let rKeyDown = false;
+let tiltKeyDown = false;
 
 let animOffset = 0;
 let needsRender = true;
@@ -545,7 +544,7 @@ const u = {};
 
 // 3D uniforms
 const u3 = {};
-['u_heightMap','u_resolution','u_pitch','u_yaw','u_heightScale'].forEach(name => {
+['u_heightMap','u_resolution','u_camDir','u_camRight','u_heightScale'].forEach(name => {
   u3[name] = gl.getUniformLocation(prog3D, name);
 });
 
@@ -648,15 +647,15 @@ function render3D() {
   gl.bindTexture(gl.TEXTURE_2D, fboTexture);
   gl.uniform1i(u3.u_heightMap, 0);
   gl.uniform2f(u3.u_resolution, canvas.width, canvas.height);
-  gl.uniform1f(u3.u_pitch, state.camPitch);
-  gl.uniform1f(u3.u_yaw, state.camYaw);
+  gl.uniform3f(u3.u_camDir, state.camDirX, state.camDirY, state.camDirZ);
+  gl.uniform2f(u3.u_camRight, state.camRightX, state.camRightY);
   gl.uniform1f(u3.u_heightScale, state.heightScale);
 
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 }
 
 function render() {
-  if (state.camPitch > 0.005) {
+  if (state.camDirZ < 0.99999) {
     renderFractal(true);   // pass 1: fractal to texture
     render3D();            // pass 2: ray march the height field
   } else {
@@ -689,7 +688,7 @@ canvas.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 canvas.addEventListener('mousedown', (e) => {
-  if (rKeyDown) return; // don't start drag while rotating
+  if (tiltKeyDown) return; // don't start drag while rotating
   isDragging = true;
   dragStartX = e.clientX;
   dragStartY = e.clientY;
@@ -698,11 +697,55 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
-  // 3D camera rotation while R is held
-  if (rKeyDown) {
-    state.camYaw += e.movementX * 0.005;
-    state.camPitch = Math.max(0.0, Math.min(1.5, state.camPitch - e.movementY * 0.005));
-    document.getElementById('3d-controls').style.display = state.camPitch > 0.005 ? 'block' : 'none';
+  // 3D camera rotation while R is held (trackball style)
+  if (tiltKeyDown) {
+    const sens = 0.005;
+    let dx = state.camDirX, dy = state.camDirY, dz = state.camDirZ;
+
+    let rx = state.camRightX, ry = state.camRightY;
+
+    // Horizontal mouse: rotate both camDir and camRight around Z axis
+    const ya = -e.movementX * sens;
+    const cyaw = Math.cos(ya), syaw = Math.sin(ya);
+    const nx = dx * cyaw - dy * syaw;
+    const ny = dx * syaw + dy * cyaw;
+    dx = nx; dy = ny;
+    const nrx = rx * cyaw - ry * syaw;
+    const nry = rx * syaw + ry * cyaw;
+    rx = nrx; ry = nry;
+
+    // Vertical mouse: rotate camDir around tracked camRight axis
+    {
+      const pa = -e.movementY * sens;
+      const cp = Math.cos(pa), sp = Math.sin(pa);
+      // Rodrigues: k=(rx,ry,0), v=(dx,dy,dz), k·v=0 (perpendicular)
+      // k×v = (ry*dz, -rx*dz, rx*dy - ry*dx)
+      const cx = ry * dz, cy2 = -rx * dz, cz = rx * dy - ry * dx;
+      const ndx = dx * cp + cx * sp;
+      const ndy = dy * cp + cy2 * sp;
+      const ndz = dz * cp + cz * sp;
+      dx = ndx; dy = ndy; dz = ndz;
+    }
+
+    // Clamp: keep camera above horizon
+    if (dz < 0.07) {
+      const xyL = Math.sqrt(dx * dx + dy * dy);
+      if (xyL > 0.001) {
+        const maxXY = Math.sqrt(1 - 0.07 * 0.07);
+        dx = dx / xyL * maxXY; dy = dy / xyL * maxXY;
+      }
+      dz = 0.07;
+    }
+
+    // Normalize camDir
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    state.camDirX = dx / len; state.camDirY = dy / len; state.camDirZ = dz / len;
+
+    // Normalize camRight
+    const rlen = Math.sqrt(rx * rx + ry * ry);
+    state.camRightX = rx / rlen; state.camRightY = ry / rlen;
+
+    document.getElementById('3d-controls').style.display = state.camDirZ < 0.99999 ? 'block' : 'none';
     needsRender = true;
     return;
   }
@@ -863,14 +906,20 @@ window.addEventListener('keydown', (e) => {
       updateInfo();
     }
   }
-  if ((e.key === 'r' || e.key === 'R') && !e.repeat) {
-    rKeyDown = true;
+  if ((e.key === 't' || e.key === 'T') && !e.repeat) {
+    tiltKeyDown = true;
+  }
+  if (e.key === 'r' || e.key === 'R') {
+    state.camDirX = 0.0; state.camDirY = 0.0; state.camDirZ = 1.0;
+    state.camRightX = 1.0; state.camRightY = 0.0;
+    document.getElementById('3d-controls').style.display = 'none';
+    needsRender = true;
   }
 });
 
 window.addEventListener('keyup', (e) => {
-  if (e.key === 'r' || e.key === 'R') {
-    rKeyDown = false;
+  if (e.key === 't' || e.key === 'T') {
+    tiltKeyDown = false;
   }
 });
 
@@ -883,7 +932,8 @@ document.addEventListener('pointerlockchange', () => {
 
 document.getElementById('resetBtn').addEventListener('click', () => {
   state.centerX = -0.5; state.centerY = 0; state.zoom = 1;
-  state.camPitch = 0.0; state.camYaw = 0.0;
+  state.camDirX = 0.0; state.camDirY = 0.0; state.camDirZ = 1.0;
+  state.camRightX = 1.0; state.camRightY = 0.0;
   needsRender = true; updateInfo();
 });
 
