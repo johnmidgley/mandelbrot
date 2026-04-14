@@ -655,7 +655,8 @@ function render3D() {
 }
 
 function render() {
-  if (state.camDirZ < 0.99999) {
+  const hasCamRotation = state.camDirZ < 0.99999 || state.camRightX < 0.99999;
+  if (hasCamRotation) {
     renderFractal(true);   // pass 1: fractal to texture
     render3D();            // pass 2: ray march the height field
   } else {
@@ -745,7 +746,8 @@ canvas.addEventListener('mousemove', (e) => {
     const rlen = Math.sqrt(rx * rx + ry * ry);
     state.camRightX = rx / rlen; state.camRightY = ry / rlen;
 
-    document.getElementById('3d-controls').style.display = state.camDirZ < 0.99999 ? 'block' : 'none';
+    document.getElementById('3d-controls').style.display =
+      (state.camDirZ < 0.99999 || state.camRightX < 0.99999) ? 'block' : 'none';
     needsRender = true;
     return;
   }
